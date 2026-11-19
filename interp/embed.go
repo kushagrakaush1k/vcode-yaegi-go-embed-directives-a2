@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 
+	"embed"
+
 	"github.com/traefik/yaegi/stdlib/embedfs"
 )
 
@@ -170,8 +172,8 @@ func isEmbedBytes(t *itype) bool {
 	return v.cat == uint8T && v.path == "" && (v.name == "uint8" || v.name == "byte")
 }
 
-// embedFSType is the concrete type registered as embed.FS.
-var embedFSType = reflect.TypeOf(embedfs.FS{})
+// embedFSType is the standard library embed.FS type registered for interpreted code.
+var embedFSType = reflect.TypeOf(embed.FS{})
 
 // isEmbedFS reports whether t is embed.FS or an alias of it.
 // A defined type with embed.FS as its underlying type does not match.
@@ -235,7 +237,7 @@ func (interp *Interpreter) setEmbedFS(n *node) error {
 		files[rel] = data
 	}
 	v := reflect.New(n.typ.frameType()).Elem()
-	v.Set(reflect.ValueOf(embedfs.New(files)))
+	v.Set(reflect.ValueOf(embedfs.Build(files)))
 	n.embedVal = v
 	n.hasEmbed = true
 	return nil
