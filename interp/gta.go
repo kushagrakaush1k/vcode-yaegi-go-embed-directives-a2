@@ -123,11 +123,29 @@ func (interp *Interpreter) gta(root *node, rpath, importPath, pkgName string) ([
 					return false
 				}
 			}
+			if len(n.embedPatterns) > 0 && (n.typ == nil || !n.typ.isComplete()) {
+				// The variable type may be declared later in the package.
+				revisit = append(revisit, n)
+				return false
+			}
+			if len(n.embedPatterns) > 0 {
+				if err = interp.setEmbedValue(n); err != nil {
+					return false
+				}
+			}
 			for _, c := range n.child[:l] {
 				asImportName := path.Join(c.ident, baseName)
 				sym, exists := sc.sym[asImportName]
 				if !exists {
-					sc.sym[c.ident] = &symbol{index: sc.add(n.typ), kind: varSym, global: true, typ: n.typ, node: n}
+					sc.sym[c.ident] = &symbol{
+						index:    sc.add(n.typ),
+						kind:     varSym,
+						global:   true,
+						typ:      n.typ,
+						node:     n,
+						embed:    n.embedVal,
+						hasEmbed: n.hasEmbed,
+					}
 					continue
 				}
 				c.level = globalFrame

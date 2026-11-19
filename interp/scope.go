@@ -46,15 +46,17 @@ func (k sKind) String() string {
 // A symbol represents an interpreter object such as type, constant, var, func,
 // label, builtin or binary object. Symbols are defined within a scope.
 type symbol struct {
-	kind    sKind
-	typ     *itype        // Type of value
-	node    *node         // Node value if index is negative
-	from    []*node       // list of goto nodes jumping to this label node, or nil
-	recv    *receiver     // receiver node value, if sym refers to a method
-	index   int           // index of value in frame or -1
-	rval    reflect.Value // default value (used for constants)
-	builtin bltnGenerator // Builtin function or nil
-	global  bool          // true if symbol is defined in global space
+	kind     sKind
+	typ      *itype        // Type of value
+	node     *node         // Node value if index is negative
+	from     []*node       // list of goto nodes jumping to this label node, or nil
+	recv     *receiver     // receiver node value, if sym refers to a method
+	index    int           // index of value in frame or -1
+	rval     reflect.Value // default value (used for constants)
+	builtin  bltnGenerator // Builtin function or nil
+	global   bool          // true if symbol is defined in global space
+	hasEmbed bool          // true when embed is the //go:embed initial value
+	embed    reflect.Value // settable initial value loaded for //go:embed
 }
 
 // scope type stores symbols in maps, and frame layout as array of types

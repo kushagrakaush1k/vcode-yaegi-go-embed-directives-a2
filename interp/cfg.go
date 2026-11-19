@@ -2287,8 +2287,14 @@ func (interp *Interpreter) cfg(root *node, sc *scope, importPath, pkgName string
 				var index int
 				if sc.global {
 					// Global object allocation is already performed in GTA.
-					index = sc.sym[c.ident].index
+					sym := sc.sym[c.ident]
+					index = sym.index
 					c.level = globalFrame
+					// reset would replace a //go:embed value, already stored in
+					// the frame, with the zero value.
+					if sym.hasEmbed {
+						n.gen = nop
+					}
 				} else {
 					index = sc.add(n.typ)
 					sc.sym[c.ident] = &symbol{index: index, kind: varSym, typ: n.typ}
