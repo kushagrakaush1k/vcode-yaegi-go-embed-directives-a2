@@ -371,6 +371,47 @@ func main() {}
 	}
 }
 
+func TestEmbedIgnoresOtherDirectives(t *testing.T) {
+	// Compiler directives other than //go:embed are not implemented.
+	// They must not fail the program, and they must not block a real embed
+	// written in the same comment group.
+	fsys := fstest.MapFS{
+		"pkg/hello.txt": &fstest.MapFile{Data: []byte("hello")},
+		"pkg/main.go": &fstest.MapFile{Data: []byte(`package main
+
+//go:generate echo hi
+//go:noinline
+//go:norace
+func marker() {
+	println("ran")
+}
+
+//go:nosplit
+//go:noescape
+//go:linkname marker other.marker
+//go:uintptrescapes
+//go:embed hello.txt
+var s string
+
+//go:noinline
+const n = 2
+
+func main() {
+	marker()
+	println(s)
+	println(n)
+}
+`)},
+	}
+	got, err := evalEmbed(t, fsys, "pkg/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "ran\nhello\n2\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestEmbedIgnoresNonDirective(t *testing.T) {
 	fsys := fstest.MapFS{
 		"pkg/hello.txt": &fstest.MapFile{Data: []byte("hello")},

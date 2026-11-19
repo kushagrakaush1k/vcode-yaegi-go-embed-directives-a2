@@ -67,7 +67,10 @@ func countValueNames(gd *ast.GenDecl) int {
 
 // embedDirectivePatterns returns patterns from //go:embed lines in g.
 // A line is a directive only when it begins with "//go:embed" followed by
-// whitespace or the end of the comment. Other comments are ignored.
+// whitespace or the end of the comment.
+// Other //go: directives (noinline, norace, nosplit, noescape, linkname,
+// generate, and the rest) are not implemented. They are ignored so the
+// surrounding declaration still runs.
 func embedDirectivePatterns(g *ast.CommentGroup) ([]string, error) {
 	if g == nil {
 		return nil, nil
@@ -75,6 +78,9 @@ func embedDirectivePatterns(g *ast.CommentGroup) ([]string, error) {
 	var patterns []string
 	for _, c := range g.List {
 		raw := c.Text
+		if isIgnoredGoDirective(raw) {
+			continue
+		}
 		const prefix = "//go:embed"
 		if !strings.HasPrefix(raw, prefix) {
 			continue
@@ -97,6 +103,23 @@ func embedDirectivePatterns(g *ast.CommentGroup) ([]string, error) {
 		patterns = append(patterns, pats...)
 	}
 	return patterns, nil
+}
+
+// isIgnoredGoDirective reports a //go: compiler directive other than //go:embed.
+// Those directives have no effect in the interpreter.
+func isIgnoredGoDirective(raw string) bool {
+	const mark = "//go:"
+	if !strings.HasPrefix(raw, mark) {
+		return false
+	}
+	rest := raw[len(mark):]
+	if strings.HasPrefix(rest, "embed") {
+		tail := rest[len("embed"):]
+		if tail == "" || tail[0] == ' ' || tail[0] == '\t' {
+			return false
+		}
+	}
+	return true
 }
 
 // splitEmbedPatterns splits a //go:embed argument list. Patterns are
