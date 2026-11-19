@@ -9,12 +9,28 @@ import (
 	"testing/fstest"
 
 	"github.com/traefik/yaegi/interp"
+	"github.com/traefik/yaegi/stdlib"
 )
 
 func evalEmbed(t *testing.T, fsys fstest.MapFS, path string) (string, error) {
 	t.Helper()
+	return evalEmbedOpt(t, fsys, path, false)
+}
+
+func evalEmbedFS(t *testing.T, fsys fstest.MapFS, path string) (string, error) {
+	t.Helper()
+	return evalEmbedOpt(t, fsys, path, true)
+}
+
+func evalEmbedOpt(t *testing.T, fsys fstest.MapFS, path string, useStdlib bool) (string, error) {
+	t.Helper()
 	var out bytes.Buffer
 	i := interp.New(interp.Options{SourcecodeFilesystem: fsys, Stdout: &out, Stderr: &out})
+	if useStdlib {
+		if err := i.Use(stdlib.Symbols); err != nil {
+			t.Fatal(err)
+		}
+	}
 	_, err := i.EvalPath(path)
 	return out.String(), err
 }
@@ -374,6 +390,228 @@ func main() {
 	}
 	if got != "0\n" {
 		t.Fatalf("got %q, want zero length", got)
+	}
+}
+
+func TestEmbedFS(t *testing.T) {
+	// hello.txt at the filesystem root is a decoy. Patterns resolve next to the
+	// Go file, and embed.FS is read through io/fs rather than the host disk.
+	fsys := fstest.MapFS{
+		"hello.txt":          &fstest.MapFile{Data: []byte("WRONG")},
+		"pkg/hello.txt":      &fstest.MapFile{Data: []byte("hello")},
+		"pkg/data/only.txt":  &fstest.MapFile{Data: []byte("solo")},
+		"pkg/data/sub/n.txt": &fstest.MapFile{Data: []byte("nest")},
+		"pkg/data/.hidden":   &fstest.MapFile{Data: []byte("nope")},
+		"pkg/data/_skip.txt": &fstest.MapFile{Data: []byte("nope")},
+		"pkg/main.go": &fstest.MapFile{Data: []byte(`package main
+
+import (
+	"embed"
+	"io/fs"
+)
+
+//go:embed hello.txt
+var single embed.FS
+
+var (
+	//go:embed hello.txt data
+	grouped embed.FS
+)
+
+//go:embed hello.txt
+var (
+	above embed.FS
+)
+
+func mustRead(f embed.FS, name string) string {
+	b, err := fs.ReadFile(f, name)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+var early = mustRead(single, "hello.txt")
+
+func init() {
+	if early != "hello" || mustRead(above, "hello.txt") != "hello" {
+		panic("embed.FS missing before init")
+	}
+	if mustRead(grouped, "hello.txt") != "hello" || mustRead(grouped, "data/only.txt") != "solo" || mustRead(grouped, "data/sub/n.txt") != "nest" {
+		panic("tree")
+	}
+	if _, err := fs.ReadFile(grouped, "data/.hidden"); err == nil {
+		panic("hidden")
+	}
+	if _, err := fs.ReadFile(grouped, "data/_skip.txt"); err == nil {
+		panic("skip")
+	}
+	if _, err := fs.ReadFile(grouped, "WRONG"); err == nil {
+		panic("root")
+	}
+}
+
+func main() {
+	println(early)
+	println(mustRead(single, "hello.txt"))
+	println(mustRead(above, "hello.txt"))
+
+	ents, err := fs.ReadDir(grouped, ".")
+	if err != nil {
+		panic(err)
+	}
+	for i := 0; i < len(ents); i++ {
+		println(ents[i].Name())
+		if ents[i].IsDir() {
+			println("dir")
+		} else {
+			println("file")
+		}
+	}
+	ents, err = fs.ReadDir(grouped, "data")
+	if err != nil {
+		panic(err)
+	}
+	for i := 0; i < len(ents); i++ {
+		println(ents[i].Name())
+		if ents[i].IsDir() {
+			println("dir")
+		} else {
+			println("file")
+		}
+	}
+	println(mustRead(grouped, "data/sub/n.txt"))
+
+	b, err := fs.ReadFile(single, "hello.txt")
+	if err != nil {
+		panic(err)
+	}
+	b[0] = 'H'
+	println(mustRead(single, "hello.txt"))
+
+	f, err := single.Open("hello.txt")
+	if err != nil {
+		panic(err)
+	}
+	buf := make([]byte, 8)
+	n, err := f.Read(buf)
+	if n != 5 {
+		panic(n)
+	}
+	println(string(buf[:n]))
+	f.Close()
+}
+`)},
+	}
+	got, err := evalEmbedFS(t, fsys, "pkg/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{
+		"hello",
+		"hello",
+		"hello",
+		"data",
+		"dir",
+		"hello.txt",
+		"file",
+		"only.txt",
+		"file",
+		"sub",
+		"dir",
+		"nest",
+		"hello",
+		"hello",
+		"",
+	}, "\n")
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestEmbedFSAlias(t *testing.T) {
+	fsys := fstest.MapFS{
+		"pkg/hello.txt": &fstest.MapFile{Data: []byte("alias")},
+		"pkg/main.go": &fstest.MapFile{Data: []byte(`package main
+
+import (
+	"embed"
+	"io/fs"
+)
+
+type E = embed.FS
+
+//go:embed hello.txt
+var files E
+
+func main() {
+	b, err := fs.ReadFile(files, "hello.txt")
+	if err != nil {
+		panic(err)
+	}
+	println(string(b))
+	ents, err := fs.ReadDir(files, ".")
+	if err != nil || len(ents) != 1 {
+		panic(err)
+	}
+	println(ents[0].Name())
+}
+`)},
+	}
+	got, err := evalEmbedFS(t, fsys, "pkg/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "alias\nhello.txt\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEmbedFSErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		fs   fstest.MapFS
+		want string
+	}{
+		{
+			name: "defined type",
+			src: `package main
+import "embed"
+type E embed.FS
+//go:embed hello.txt
+var files E
+func main() {}
+`,
+			fs:   fstest.MapFS{"pkg/hello.txt": &fstest.MapFile{Data: []byte("x")}},
+			want: "cannot apply to var of type",
+		},
+		{
+			name: "missing",
+			src: `package main
+import "embed"
+//go:embed missing.txt
+var files embed.FS
+func main() {}
+`,
+			want: "no matching files found",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fsys := tc.fs
+			if fsys == nil {
+				fsys = fstest.MapFS{}
+			}
+			fsys["pkg/main.go"] = &fstest.MapFile{Data: []byte(tc.src)}
+			_, err := evalEmbedFS(t, fsys, "pkg/main.go")
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %q, want substring %q", err.Error(), tc.want)
+			}
+		})
 	}
 }
 

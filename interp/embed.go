@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/traefik/yaegi/stdlib/embedfs"
 )
 
 // attachEmbed records //go:embed patterns placed immediately above a
@@ -145,18 +147,35 @@ func isEmbedBytes(t *itype) bool {
 	return v.cat == uint8T && v.path == "" && (v.name == "uint8" || v.name == "byte")
 }
 
-// setEmbedValue reads the single file selected by n.embedPatterns from the
-// interpreter source filesystem and stores it on n. The directory is the
-// directory of the Go file that contains the directive.
+// embedFSType is the concrete type registered as embed.FS.
+var embedFSType = reflect.TypeOf(embedfs.FS{})
+
+// isEmbedFS reports whether t is embed.FS or an alias of it.
+// A defined type with embed.FS as its underlying type does not match.
+func isEmbedFS(t *itype) bool {
+	return t != nil && t.cat == valueT && t.rtype == embedFSType
+}
+
+// setEmbedValue reads files selected by n.embedPatterns from the interpreter
+// source filesystem and stores them on n. The directory is the directory of
+// the Go file that contains the directive.
 func (interp *Interpreter) setEmbedValue(n *node) error {
-	if n.typ == nil || (!isEmbedString(n.typ) && !isEmbedBytes(n.typ)) {
+	switch {
+	case isEmbedString(n.typ) || isEmbedBytes(n.typ):
+		return interp.setEmbedData(n)
+	case isEmbedFS(n.typ):
+		return interp.setEmbedFS(n)
+	default:
 		name := "<unknown>"
 		if n.typ != nil {
 			name = n.typ.id()
 		}
 		return n.cfgErrorf("go:embed cannot apply to var of type %s", name)
 	}
-	dir := path.Dir(filepath.ToSlash(interp.fset.Position(n.pos).Filename))
+}
+
+func (interp *Interpreter) setEmbedData(n *node) error {
+	dir := embedDir(interp, n)
 	data, err := interp.readEmbed(dir, n.embedPatterns)
 	if err != nil {
 		return n.cfgErrorf("%s", err.Error())
@@ -174,9 +193,56 @@ func (interp *Interpreter) setEmbedValue(n *node) error {
 	return nil
 }
 
-// readEmbed resolves patterns relative to dir through the interpreter
-// source filesystem. string and []byte require exactly one file.
-func (interp *Interpreter) readEmbed(dir string, patterns []string) ([]byte, error) {
+func (interp *Interpreter) setEmbedFS(n *node) error {
+	dir := embedDir(interp, n)
+	paths, err := interp.embedMatches(dir, n.embedPatterns)
+	if err != nil {
+		return n.cfgErrorf("%s", err.Error())
+	}
+	files := make(map[string][]byte, len(paths))
+	for _, full := range paths {
+		rel, err := relEmbed(dir, full)
+		if err != nil {
+			return n.cfgErrorf("%s", err.Error())
+		}
+		data, err := fs.ReadFile(interp.opt.filesystem, full)
+		if err != nil {
+			return n.cfgErrorf("%s", err.Error())
+		}
+		files[rel] = data
+	}
+	v := reflect.New(n.typ.frameType()).Elem()
+	v.Set(reflect.ValueOf(embedfs.New(files)))
+	n.embedVal = v
+	n.hasEmbed = true
+	return nil
+}
+
+func embedDir(interp *Interpreter, n *node) string {
+	return path.Dir(filepath.ToSlash(interp.fset.Position(n.pos).Filename))
+}
+
+// relEmbed returns full with dir removed. full came from a pattern resolved
+// against dir, so the result is the name used inside embed.FS.
+func relEmbed(dir, full string) (string, error) {
+	if dir == "" || dir == "." {
+		return full, nil
+	}
+	prefix := strings.TrimSuffix(dir, "/") + "/"
+	if !strings.HasPrefix(full, prefix) {
+		return "", fmt.Errorf("go:embed: file %s is outside %s", full, dir)
+	}
+	rel := full[len(prefix):]
+	if rel == "" || !fs.ValidPath(rel) {
+		return "", fmt.Errorf("go:embed: invalid embedded path %s", rel)
+	}
+	return rel, nil
+}
+
+// embedMatches resolves patterns relative to dir through the interpreter
+// source filesystem. Each pattern must match at least one file. Results are
+// deduplicated.
+func (interp *Interpreter) embedMatches(dir string, patterns []string) ([]string, error) {
 	seen := map[string]struct{}{}
 	var files []string
 	for _, pattern := range patterns {
@@ -191,6 +257,17 @@ func (interp *Interpreter) readEmbed(dir string, patterns []string) ([]byte, err
 			seen[m] = struct{}{}
 			files = append(files, m)
 		}
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+// readEmbed resolves patterns relative to dir through the interpreter
+// source filesystem. string and []byte require exactly one file.
+func (interp *Interpreter) readEmbed(dir string, patterns []string) ([]byte, error) {
+	files, err := interp.embedMatches(dir, patterns)
+	if err != nil {
+		return nil, err
 	}
 	if len(files) != 1 {
 		return nil, fmt.Errorf("go:embed: matched %d files, want exactly one", len(files))
